@@ -51,6 +51,7 @@ use rsa::{
     BigUint, PaddingScheme, PublicKey as _, PublicKeyParts as _, RsaPrivateKey, RsaPublicKey,
 };
 use std::fmt::{self, Display};
+use std::iter;
 
 pub mod reexports {
     pub use {digest, hmac_sha512, rand, rsa};
@@ -319,9 +320,32 @@ impl PublicKey {
         let m = BigUint::from_bytes_be(&padded);
 
         let (blind_msg, secret) = rsa_internals::blind(&mut rng, self.as_ref(), &m);
+        let secret = secret.to_bytes_be();
+        let blind_msg = blind_msg.to_bytes_be();
+
+        // BigUint strips the leading zeroes. Add them back if needed.
+        let secret = if secret.len() < modulus_bytes {
+            iter::repeat(0)
+                .take(modulus_bytes - secret.len())
+                .chain(secret.into_iter())
+                .collect()
+        } else {
+            secret
+        };
+
+        // BigUint strips the leading zeroes. Add them back if needed.
+        let blind_msg = if blind_msg.len() < modulus_bytes {
+            iter::repeat(0)
+                .take(modulus_bytes - blind_msg.len())
+                .chain(blind_msg.into_iter())
+                .collect()
+        } else {
+            blind_msg
+        };
+
         Ok(BlindingResult {
-            blind_msg: BlindedMessage(blind_msg.to_bytes_be()),
-            secret: Secret(secret.to_bytes_be()),
+            blind_msg: BlindedMessage(blind_msg),
+            secret: Secret(secret),
         })
     }
 
@@ -337,10 +361,21 @@ impl PublicKey {
         if blind_sig.len() != modulus_bytes || secret.len() != modulus_bytes {
             return Err(Error::UnsupportedParameters);
         }
+        let blind_sig_leading_zeroes = blind_sig.iter().take_while(|b| **b == 0).count();
+        let secret_leading_zeroes = blind_sig.iter().take_while(|b| **b == 0).count();
         let blind_sig = BigUint::from_bytes_be(blind_sig);
         let secret = BigUint::from_bytes_be(secret);
-        let sig =
-            Signature(rsa_internals::unblind(self.as_ref(), &blind_sig, &secret).to_bytes_be());
+        let sig = rsa_internals::unblind(self.as_ref(), &blind_sig, &secret).to_bytes_be();
+        // BigUint strips the leading zeroes. Add them back if needed.
+        let sig = if sig.len() < modulus_bytes {
+            iter::repeat(0)
+                .take(modulus_bytes - sig.len())
+                .chain(sig.into_iter())
+                .collect()
+        } else {
+            sig
+        };
+        let sig = Signature(sig);
         self.verify(&sig, msg, options)?;
         Ok(sig)
     }
