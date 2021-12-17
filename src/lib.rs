@@ -238,6 +238,24 @@ fn emsa_pss_encode(
     Ok(em)
 }
 
+/// Pad `v` with leading zeroes up to the desired length.
+///
+/// This function can be used to left-pad the big-endian representation of a `BigUint` to a certain
+/// length. More specifically, when converting a vector of bytes to `BigUint` and applying some
+/// transformations, calling `to_bytes_be()` can unexpectedly result in a vector of bytes of a
+/// different length (because `to_bytes_be()` discards any leading zeroes). See this issue for more
+/// details: https://github.com/rust-num/num-bigint/issues/201
+fn zero_left_pad(v: Vec<u8>, len: usize) -> Vec<u8> {
+    if len > v.len() {
+        iter::repeat(0)
+            .take(len - v.len())
+            .chain(v.into_iter())
+            .collect()
+    } else {
+        v
+    }
+}
+
 impl PublicKey {
     pub fn to_der(&self) -> Result<Vec<u8>, Error> {
         self.as_ref()
@@ -322,30 +340,9 @@ impl PublicKey {
         let (blind_msg, secret) = rsa_internals::blind(&mut rng, self.as_ref(), &m);
         let secret = secret.to_bytes_be();
         let blind_msg = blind_msg.to_bytes_be();
-
-        // BigUint strips the leading zeroes. Add them back if needed.
-        let secret = if secret.len() < modulus_bytes {
-            iter::repeat(0)
-                .take(modulus_bytes - secret.len())
-                .chain(secret.into_iter())
-                .collect()
-        } else {
-            secret
-        };
-
-        // BigUint strips the leading zeroes. Add them back if needed.
-        let blind_msg = if blind_msg.len() < modulus_bytes {
-            iter::repeat(0)
-                .take(modulus_bytes - blind_msg.len())
-                .chain(blind_msg.into_iter())
-                .collect()
-        } else {
-            blind_msg
-        };
-
         Ok(BlindingResult {
-            blind_msg: BlindedMessage(blind_msg),
-            secret: Secret(secret),
+            blind_msg: BlindedMessage(zero_left_pad(blind_msg, modulus_bytes)),
+            secret: Secret(zero_left_pad(secret, modulus_bytes)),
         })
     }
 
@@ -361,21 +358,10 @@ impl PublicKey {
         if blind_sig.len() != modulus_bytes || secret.len() != modulus_bytes {
             return Err(Error::UnsupportedParameters);
         }
-        let blind_sig_leading_zeroes = blind_sig.iter().take_while(|b| **b == 0).count();
-        let secret_leading_zeroes = blind_sig.iter().take_while(|b| **b == 0).count();
         let blind_sig = BigUint::from_bytes_be(blind_sig);
         let secret = BigUint::from_bytes_be(secret);
         let sig = rsa_internals::unblind(self.as_ref(), &blind_sig, &secret).to_bytes_be();
-        // BigUint strips the leading zeroes. Add them back if needed.
-        let sig = if sig.len() < modulus_bytes {
-            iter::repeat(0)
-                .take(modulus_bytes - sig.len())
-                .chain(sig.into_iter())
-                .collect()
-        } else {
-            sig
-        };
-        let sig = Signature(sig);
+        let sig = Signature(zero_left_pad(sig, modulus_bytes));
         self.verify(&sig, msg, options)?;
         Ok(sig)
     }
@@ -467,7 +453,8 @@ impl SecretKey {
             return Err(Error::UnsupportedParameters);
         }
         let blind_sig = rsa_internals::decrypt_and_check(Some(&mut rng), self.as_ref(), &blind_msg)
-            .map_err(|_| Error::InternalError)?;
-        Ok(BlindSignature(blind_sig.to_bytes_be()))
+            .map_err(|_| Error::InternalError)?
+            .to_bytes_be();
+        Ok(BlindSignature(zero_left_pad(blind_sig, modulus_bytes)))
     }
 }
